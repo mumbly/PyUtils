@@ -1,1 +1,10 @@
-Some python utilities.
+Some python utilities. Well, at this point, only 1.
+
+=======================
+
+FileDupeFinder - find duplicate files given a directory root. Does a
+check for files that are hardlinked. Uses an md5 checksum to determine
+identity, which may not be a perfect method. Does a first pass of files
+that uses filesize to determine if there is a potential duplicate (much
+faster than doing md5 sums initially), which is definitely not a perfect
+method.
