@@ -108,6 +108,7 @@ class FileDupes(object):
       file_count += 1
       if (file_count % 100) == 0:
         print("Processed %s of %s files" % (file_count, total_count))
+    print("Processed %s files" % (total_count))
 
   def __find_dupe(self):
     """
@@ -115,6 +116,7 @@ class FileDupes(object):
     are thus identical, saving this list to self.dupeList.
 
     """
+    print("Checking ")
     sortedList = sorted(self.dupeSizeList, key=lambda file: file[1])
     lastMd5Captured = ""
     if len(sortedList) > 0:
@@ -122,6 +124,8 @@ class FileDupes(object):
     for size, md5, filename, ino in sortedList[1:]:
       if (curMd5 == md5) and (curIno != ino):
         # Since we did only a partial md5, we need to do a full md5
+        print ".",
+        sys.stdout.flush()
         curMd5 = self.__md5_for_file(curFilename)
         md5 = self.__md5_for_file(filename)
         if curMd5 == md5:
@@ -130,6 +134,7 @@ class FileDupes(object):
           self.dupeList.append((size, md5, filename, ino))
           lastMd5Captured = curMd5
       (curSize, curMd5, curFilename, curIno) = (size, md5, filename, ino)
+    print(". Done.")  
 
   def __write_dupe_file(self, filename):
     """
@@ -141,7 +146,7 @@ class FileDupes(object):
     sortedList = sorted(self.dupeList, key=lambda file: file[0])
     with open(filename, mode='w') as outfile:
       for size, md5, filename, ino in sortedList:
-        outfile.write("%s %s %s %s\n" % (size, md5, ino, filename))
+        outfile.write("%s,%s,%d,%s,\"%s\"\n" % (size, md5, len(filename), ino, filename))
 
 def get_options():
   parser = optparse.OptionParser()
