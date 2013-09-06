@@ -3,11 +3,8 @@
 Find duplicate files from a given root in the directory hierarchy of a given size
 """
 import os
-import glob
-import sys
 import hashlib
 import optparse
-import timeit
 
 class FileDupes(object):
   """Container for the list of dupe files"""
@@ -94,18 +91,16 @@ class FileDupes(object):
     """
     sortedList = sorted(self.fileList, key=lambda file: file[0])
     lastSizeCaptured = 0
-    file_count = 0
     total_count = len(sortedList)
     if total_count > 0:
       (curSize, curFilename, curIno) = sortedList[0]
-    for size, filename, ino in sortedList[1:]:
+    for file_count, (size, filename, ino) in enumerate(sortedList[1:]):
       if (curSize == size):
         if (lastSizeCaptured != curSize):
           self.dupeSizeList.append((curSize, self.__md5_for_file(curFilename,10), curFilename, curIno))
         self.dupeSizeList.append((size, self.__md5_for_file(filename,10), filename, ino))
         lastSizeCaptured = curSize
       (curSize, curFilename, curIno) = (size, filename, ino)
-      file_count += 1
       if (file_count % 100) == 0:
         print("Processed %s of %s files" % (file_count, total_count))
 
@@ -117,9 +112,10 @@ class FileDupes(object):
     """
     sortedList = sorted(self.dupeSizeList, key=lambda file: file[1])
     lastMd5Captured = ""
-    if len(sortedList) > 0:
+    total_count = len(sortedList)
+    if total_count > 0:
       (curSize, curMd5, curFilename, curIno) = sortedList[0]
-    for size, md5, filename, ino in sortedList[1:]:
+    for file_count, (size, md5, filename, ino) in enumerate(sortedList[1:]):
       if (curMd5 == md5) and (curIno != ino):
         # Since we did only a partial md5, we need to do a full md5
         curMd5 = self.__md5_for_file(curFilename)
@@ -130,6 +126,8 @@ class FileDupes(object):
           self.dupeList.append((size, md5, filename, ino))
           lastMd5Captured = curMd5
       (curSize, curMd5, curFilename, curIno) = (size, md5, filename, ino)
+      if (file_count % 100) == 0:
+        print("Analyzed %s of %s files" % (file_count, total_count))
 
   def __write_dupe_file(self, filename):
     """
