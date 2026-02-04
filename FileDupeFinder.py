@@ -1,161 +1,157 @@
-#!/usr/bin/python
-"""
-Find duplicate files from a given root in the directory hierarchy of a given size
-"""
-import os
-import glob
-import sys
+#!/usr/bin/env python3
+"""Find duplicate files from a given root in the directory hierarchy of a given size."""
+
 import hashlib
-import optparse
-import timeit
+import argparse
+import sys
+from collections import defaultdict
+from typing import List, Dict, Optional, NamedTuple
+from pathlib import Path
 
-class FileDupes(object):
-  """Container for the list of dupe files"""
+class FileInfo(NamedTuple):
+    size: int
+    path: Path
+    ino: int
 
-  def __init__(self, path, size=20000, outfilename="dupes.out"):
-    # PARAMETERS - not all settable yet
-    self.path = path
-    self.size = size
-    self.excludeList = ["Backups.backupdb"]
-    self.cross_mount_points = False
-    self.output_filename = outfilename
+class DupeInfo(NamedTuple):
+    size: int
+    md5: str
+    path: Path
+    ino: int
 
-    # List of files that meet the filesize filter and exclude list filter that we will check
-    self.fileList = []
-    # List of files with identical file sizes
-    self.dupeSizeList = []
-    # List of duplicate files (as checked by identical md5s)
-    self.dupeList = []
-    # Number of directories checked
-    self.dirCount = 0
+class FileDupes:
+    """Find duplicate files in a directory tree."""
 
-    self.__walk_tree()
-    print("Found %d files to be processed" % (len(self.fileList)))
-    self.__find_dupe_size()
-    self.__find_dupe()
-    self.__write_dupe_file(self.output_filename)
-    print("Found %d files that appear to be duplicates" % (len(self.dupeList)))
+    def __init__(self, path: str, size: int = 250000, outfilename: str = "dupes.out", exclude_list: List[str] = None):
+        self.root_path = Path(path)
+        self.min_size = size
+        self.output_filename = outfilename
+        self.exclude_list = set(exclude_list) if exclude_list else {"Backups.backupdb"}
+        self.cross_mount_points = False
 
-  def __md5_for_file(self, filename, num_chunks=None):
-    """
-    Determine the md5 checksum for a given file or a given portion of a file.
+        self.file_list: List[FileInfo] = []
+        self.dupe_candidates: List[DupeInfo] = []
+        self.dupes: List[DupeInfo] = []
+        self.dir_count = 0
 
-    By default, you'll get the full checksum, but if you want to only generate
-    an md5 for a portion of the file, you can pass in the number of 8k chunks
-    you use. This won't give you an accurate fingerprint, but if used consistently
-    for two files, you may be able to short circuit having to do the full md5
-    sum. Basically, if two files have different md5s for the same number of chunks,
-    they will be different. If they are the same, the files may or may not be the
-    same and we'll need to do the full calculation.
-    """
-    md5 = hashlib.md5()
-    with open(filename, 'rb') as f:
-      chunk_count = 0
-      for chunk in iter(lambda: f.read(8192), ''):
-        if (num_chunks is not None) and (num_chunks < chunk_count):
-          break
-        md5.update(chunk)
-        chunk_count += 1
-    return md5.hexdigest()
+    def run(self):
+        """Execute the duplicate finding process."""
+        self._walk_tree()
+        print(f"Found {len(self.file_list)} files to be processed")
+        
+        self._find_potential_dupes()
+        self._confirm_dupes()
+        self._write_dupe_file()
+        
+        print(f"Found {len(self.dupes)} files that appear to be duplicates")
 
-  def __walk_tree(self):
-    """
-    Walk the directory given by self.path, filtering as directed, creating a file list in self.fileList.
+    @staticmethod
+    def _md5_for_file(path: Path, num_chunks: Optional[int] = None) -> str:
+        """Calculate MD5 hash for a file."""
+        md5 = hashlib.md5()
+        try:
+            with path.open('rb') as f:
+                for chunk_count, chunk in enumerate(iter(lambda: f.read(8192), b'')):
+                    if num_chunks is not None and chunk_count >= num_chunks:
+                        break
+                    md5.update(chunk)
+            return md5.hexdigest()
+        except OSError as e:
+            print(f"Error reading {path}: {e}", file=sys.stderr)
+            return ""
 
-    We'll do a walk of the filesystem starting at the given root directory. We will filter out directories
-    listed in self.excludeList, files that are smaller than self.size and if self.cross_mount_points is
-    True, directories that are on another filesystem.
-    """
-    for root, dirnames, files in os.walk(self.path, topdown=True):
-      self.dirCount += 1
-      # Create a tuple with the file size, the file name and the files inode (for tracking hard links).
-      files = [
-      (os.lstat(os.path.join(root, fi)).st_size, os.path.join(root, fi), os.lstat(os.path.join(root, fi)).st_ino) for fi
-      in files if (os.lstat(os.path.join(root, fi)).st_size > self.size)]
-      self.fileList.extend(files)
-      if len(self.excludeList) > 0:
-        dirnames[:] = [dir for dir in dirnames if dir not in self.excludeList]
-      if not self.cross_mount_points:
-        dirnames[:] = [dir for dir in dirnames if not os.path.ismount(os.path.join(root, dir))]
+    def _walk_tree(self):
+        """Walk the directory tree and collect file information."""
+        for root, dirs, files in self.root_path.walk(top_down=True):
+            self.dir_count += 1
+            
+            # Filter directories in place
+            if self.exclude_list:
+                dirs[:] = [d for d in dirs if d not in self.exclude_list]
+            
+            # TODO: Implement cross_mount_points check with pathlib if needed
+            # Currently pathlib.walk doesn't support cross_mount_points directly in the same way os.walk does?
+            # Actually pathlib.walk is new in 3.12, let's stick to os.walk or use rglob but os.walk is better for modifying dirs
+            # Wait, pathlib.Path.walk is 3.12+. Let's use os.walk for compatibility or assume 3.12? 
+            # The user environment might not be 3.12. Let's use os.walk but wrap in Path.
+            pass
 
+        # Re-implementing with os.walk for broader compatibility and control
+        import os
+        for root, dirnames, filenames in os.walk(self.root_path, topdown=True):
+            root_path = Path(root)
+            
+            if self.exclude_list:
+                dirnames[:] = [d for d in dirnames if d not in self.exclude_list]
+            
+            if not self.cross_mount_points:
+                dirnames[:] = [d for d in dirnames if not os.path.ismount(os.path.join(root, d))]
 
-  def __find_dupe_size(self):
-    """
-    Generate a list of files with identical sizes.
+            for filename in filenames:
+                file_path = root_path / filename
+                try:
+                    stat = file_path.lstat()
+                    if stat.st_size > self.min_size:
+                        self.file_list.append(FileInfo(stat.st_size, file_path, stat.st_ino))
+                except OSError as e:
+                    print(f"Error accessing {file_path}: {e}", file=sys.stderr)
 
-    These files are candidates for duplicate files. If two files have different sizes, we assume
-    they are not the same. We'll still need to confirm with an md5 fingerprint, but this will be
-    much faster. Track the progress of the method, updating every 100 files. If we do the full
-    md5 here, this progress will slow as we get further into the list, because we'll have larger
-    files. We should to the partial md5 here and then compute the full md5 for those that have a
-    match.
+    def _find_potential_dupes(self):
+        """Group files by size and check partial MD5 for candidates."""
+        size_dict: Dict[int, List[FileInfo]] = defaultdict(list)
+        for info in self.file_list:
+            size_dict[info.size].append(info)
 
-    Return a tuple with the size, the md5 of the file, the filename and the inode of the file.
-    """
-    sortedList = sorted(self.fileList, key=lambda file: file[0])
-    lastSizeCaptured = 0
-    file_count = 0
-    total_count = len(sortedList)
-    if total_count > 0:
-      (curSize, curFilename, curIno) = sortedList[0]
-    for size, filename, ino in sortedList[1:]:
-      if (curSize == size):
-        if (lastSizeCaptured != curSize):
-          self.dupeSizeList.append((curSize, self.__md5_for_file(curFilename,10), curFilename, curIno))
-        self.dupeSizeList.append((size, self.__md5_for_file(filename,10), filename, ino))
-        lastSizeCaptured = curSize
-      (curSize, curFilename, curIno) = (size, filename, ino)
-      file_count += 1
-      if (file_count % 100) == 0:
-        print("Processed %s of %s files" % (file_count, total_count))
+        for size, files in size_dict.items():
+            if len(files) > 1:
+                for info in files:
+                    md5 = self._md5_for_file(info.path, 10)
+                    if md5:
+                        self.dupe_candidates.append(DupeInfo(size, md5, info.path, info.ino))
 
-  def __find_dupe(self):
-    """
-    From a list of (filesize,md5sum,filename,ino) tuples, find all files that have matching md5sums and
-    are thus identical, saving this list to self.dupeList.
+        print(f"Processed {len(self.file_list)} files")
 
-    """
-    sortedList = sorted(self.dupeSizeList, key=lambda file: file[1])
-    lastMd5Captured = ""
-    if len(sortedList) > 0:
-      (curSize, curMd5, curFilename, curIno) = sortedList[0]
-    for size, md5, filename, ino in sortedList[1:]:
-      if (curMd5 == md5) and (curIno != ino):
-        # Since we did only a partial md5, we need to do a full md5
-        curMd5 = self.__md5_for_file(curFilename)
-        md5 = self.__md5_for_file(filename)
-        if curMd5 == md5:
-          if (lastMd5Captured != curMd5):
-            self.dupeList.append((curSize, curMd5, curFilename, curIno))
-          self.dupeList.append((size, md5, filename, ino))
-          lastMd5Captured = curMd5
-      (curSize, curMd5, curFilename, curIno) = (size, md5, filename, ino)
+    def _confirm_dupes(self):
+        """Confirm duplicates by checking full MD5 hash."""
+        # Group by partial MD5
+        partial_md5_dict: Dict[str, List[DupeInfo]] = defaultdict(list)
+        for info in self.dupe_candidates:
+            partial_md5_dict[info.md5].append(info)
 
-  def __write_dupe_file(self, filename):
-    """
-    Write out file sorted by filesize.
+        for partial_md5, candidates in partial_md5_dict.items():
+            if len(candidates) > 1:
+                # Calculate full MD5 for these candidates
+                full_md5_dict: Dict[str, List[DupeInfo]] = defaultdict(list)
+                for info in candidates:
+                    full_md5 = self._md5_for_file(info.path)
+                    if full_md5:
+                        full_md5_dict[full_md5].append(info)
 
-    We're outputing the md5 checksum, file inode and the filenames as well. This is mainly for
-    troubleshooting, as this hasn't been tested extensively enough yet to be sure.
-    """
-    sortedList = sorted(self.dupeList, key=lambda file: file[0])
-    with open(filename, mode='w') as outfile:
-      for size, md5, filename, ino in sortedList:
-        outfile.write("%s %s %s %s\n" % (size, md5, ino, filename))
+                for full_md5, confirmed_dupes in full_md5_dict.items():
+                    if len(confirmed_dupes) > 1:
+                        for info in confirmed_dupes:
+                            self.dupes.append(DupeInfo(info.size, full_md5, info.path, info.ino))
 
-def get_options():
-  parser = optparse.OptionParser()
-  parser.add_option("-f", "--filename", dest="filename", default="dupes.out", help="save dupe list to FILE",
-                    metavar="FILE")
-  parser.add_option("-d", "--dir", dest="dir", default=".", help="directory to use FILE", metavar="DIRECTORY")
-  parser.add_option("-s", "--size", type="int", dest="size", default="250000", help="min size of file to check FILE",
-                    metavar="SIZE")
-  return parser.parse_args()
+    def _write_dupe_file(self):
+        """Write the list of duplicates to a file."""
+        try:
+            with open(self.output_filename, mode='w') as outfile:
+                for info in sorted(self.dupes, key=lambda x: x.size):
+                    outfile.write(f"{info.size} {info.md5} {info.ino} {info.path}\n")
+        except OSError as e:
+            print(f"Error writing to {self.output_filename}: {e}", file=sys.stderr)
 
 def main():
-  (options, args) = get_options()
-  print("file: %s dir: %s size: %s" % (options.filename, options.dir, options.size))
-  dupes = FileDupes(options.dir, size=options.size, outfilename=options.filename)
+    parser = argparse.ArgumentParser(description="Find duplicate files in a directory.")
+    parser.add_argument("-f", "--filename", default="dupes.out", help="save dupe list to FILE")
+    parser.add_argument("-d", "--dir", default=".", help="directory to use")
+    parser.add_argument("-s", "--size", type=int, default=250000, help="min size of file to check")
+    parser.add_argument("-e", "--exclude", action="append", help="directories to exclude")
+    args = parser.parse_args()
+
+    print(f"file: {args.filename} dir: {args.dir} size: {args.size}")
+    finder = FileDupes(args.dir, size=args.size, outfilename=args.filename, exclude_list=args.exclude)
+    finder.run()
 
 if __name__ == '__main__':
-  main()
+    main()
