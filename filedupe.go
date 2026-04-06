@@ -44,6 +44,8 @@ func newFileDupes(path string, size int64, outfilename string) *FileDupes {
 }
 
 func (fd *FileDupes) run() {
+	// TODO: Add a -v / --verbose flag that prints progress counts after each stage
+	//       (files found, candidates, confirmed dupes) so large scans give feedback.
 	fd.walkTree()
 	fmt.Printf("Found %d files to be processed\n", len(fd.fileList))
 	fd.findPotentialDupes()
@@ -53,6 +55,9 @@ func (fd *FileDupes) run() {
 }
 
 func (fd *FileDupes) walkTree() {
+	// TODO: The entire file list is accumulated in memory before hashing begins.
+	//       On filesystems with millions of files this can exhaust memory; consider
+	//       a streaming approach that feeds files into hashing as they are discovered.
 	err := filepath.Walk(fd.rootPath, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			// Handle permission errors or other issues by logging and skipping
@@ -60,7 +65,7 @@ func (fd *FileDupes) walkTree() {
 			return filepath.SkipDir
 		}
 		if info.IsDir() {
-			fd.dirCount++
+			fd.dirCount++ // TODO: dirCount is tracked but never printed or returned; use it in a summary or remove it.
 			for _, exclude := range fd.excludeList {
 				if info.Name() == exclude {
 					return filepath.SkipDir
@@ -90,7 +95,12 @@ func (fd *FileDupes) findPotentialDupes() {
 	}
 
 	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, 8) // Limit concurrent goroutines
+	// TODO: The concurrency limit of 8 is hardcoded. On spinning disks 8 concurrent
+	//       readers cause seek thrashing; on SSDs more parallelism helps. Expose this
+	//       as a -j / --jobs flag so callers can tune it.
+	// TODO: There is no context/cancellation support. A long scan cannot be interrupted
+	//       cleanly on Ctrl-C. Thread a context.Context through and respect cancellation.
+	semaphore := make(chan struct{}, 8)
 	var mu sync.Mutex
 
 	for _, files := range sizeMap {
@@ -101,8 +111,11 @@ func (fd *FileDupes) findPotentialDupes() {
 				go func(f *fileInfo) {
 					defer wg.Done()
 					defer func() { <-semaphore }()
-					
-					// Partial MD5
+
+					// TODO: The 10-chunk (80KB) partial hash assumes differences appear early.
+					//       Files with identical headers (ISO images, video containers) will always
+					//       pass this check and trigger expensive full reads. Consider sampling
+					//       from multiple offsets or increasing coverage.
 					pMD5 := calculateMD5(f.path, 10)
 					if pMD5 != "" {
 						f.partialMD5 = pMD5
@@ -162,6 +175,9 @@ func (fd *FileDupes) confirmDupes() {
 
 	for _, files := range fullMD5Map {
 		if len(files) > 1 {
+			// TODO: Hard links (files sharing the same inode) are reported as duplicates even
+			//       though they occupy no extra disk space. Filter groups where all entries share
+			//       the same inode before appending to fd.dupes.
 			fd.dupes = append(fd.dupes, files...)
 		}
 	}
@@ -192,8 +208,12 @@ func (fd *FileDupes) writeDupeFile() {
 }
 
 func calculateMD5(filename string, numChunks int) string {
+	// TODO: Switch from MD5 to SHA-256 (crypto/sha256). MD5 is cryptographically broken;
+	//       while accidental collisions are rare, using SHA-256 costs little and removes ambiguity.
 	file, err := os.Open(filename)
 	if err != nil {
+		// TODO: Returning "" on error causes unreadable files to match each other as
+		//       "duplicates". Return a sentinel (e.g. a distinct error value) and skip those entries.
 		return ""
 	}
 	defer file.Close()

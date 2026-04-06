@@ -32,10 +32,12 @@ class FileDupes:
         self.file_list: List[FileInfo] = []
         self.dupe_candidates: List[DupeInfo] = []
         self.dupes: List[DupeInfo] = []
-        self.dir_count = 0
+        self.dir_count = 0  # TODO: dir_count is tracked but never printed or returned; use it in a summary or remove it.
 
     def run(self):
         """Execute the duplicate finding process."""
+        # TODO: Add a --verbose flag that prints progress counts after each stage
+        #       (files found, candidates, confirmed dupes) so large scans give feedback.
         self._walk_tree()
         print(f"Found {len(self.file_list)} files to be processed")
         
@@ -48,6 +50,8 @@ class FileDupes:
     @staticmethod
     def _md5_for_file(path: Path, num_chunks: Optional[int] = None) -> str:
         """Calculate MD5 hash for a file."""
+        # TODO: Switch from MD5 to SHA-256; MD5 is cryptographically broken and
+        #       collision resistance is not guaranteed, even if accidental collisions are rare.
         md5 = hashlib.md5()
         try:
             with path.open('rb') as f:
@@ -58,10 +62,17 @@ class FileDupes:
             return md5.hexdigest()
         except OSError as e:
             print(f"Error reading {path}: {e}", file=sys.stderr)
+            # TODO: Returning "" on error causes unreadable files to match each other as
+            #       "duplicates". Use a sentinel value (e.g. None) and skip those entries.
             return ""
 
     def _walk_tree(self):
         """Walk the directory tree and collect file information."""
+        # TODO: pathlib.Path.walk() requires Python 3.12+. Document this requirement
+        #       explicitly, or replace with os.walk() for broader compatibility.
+        # TODO: The entire file list is accumulated in memory before hashing begins.
+        #       On filesystems with millions of files this can exhaust memory; consider
+        #       a streaming/generator approach that feeds files directly into hashing.
         for root, dirs, files in self.root_path.walk(top_down=True):
             self.dir_count += 1
             
@@ -105,6 +116,10 @@ class FileDupes:
         for size, files in size_dict.items():
             if len(files) > 1:
                 for info in files:
+                    # TODO: The 10-chunk (80KB) partial hash assumes file differences appear
+                    #       early. Files sharing identical headers (ISO images, video containers,
+                    #       database dumps) will always pass this check and trigger expensive full
+                    #       reads. Consider sampling from multiple offsets or increasing coverage.
                     md5 = self._md5_for_file(info.path, 10)
                     if md5:
                         self.dupe_candidates.append(DupeInfo(size, md5, info.path, info.ino))
@@ -129,6 +144,9 @@ class FileDupes:
 
                 for full_md5, confirmed_dupes in full_md5_dict.items():
                     if len(confirmed_dupes) > 1:
+                        # TODO: Hard links (files sharing the same inode) are reported as
+                        #       duplicates even though they occupy no extra disk space. Filter
+                        #       groups where all entries share the same inode before appending.
                         for info in confirmed_dupes:
                             self.dupes.append(DupeInfo(info.size, full_md5, info.path, info.ino))
 
